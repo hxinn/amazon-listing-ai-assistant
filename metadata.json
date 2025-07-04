@@ -1,0 +1,5 @@
+{
+  "name": "Amazon Listing AI Assistant",
+  "description": "Upload a schema, select a property, provide an optional reference value, and have AI generate/complete data conforming to the schema.",
+  "requestFramePermissions": []
+}
