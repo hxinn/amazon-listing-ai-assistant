@@ -4,6 +4,7 @@ import Navigation from './components/Navigation';
 import HomePage from './pages/HomePage';
 import IntelligentPropertyParsing from './pages/IntelligentPropertyParsing';
 import AutomatedPropertyVerification from './pages/AutomatedPropertyVerification';
+import VerificationResults from './pages/VerificationResults';
 
 const App: React.FC = () => {
     return (
@@ -24,6 +25,14 @@ const App: React.FC = () => {
                             <Navigation />
                             <div className="w-full">
                                 <AutomatedPropertyVerification />
+                            </div>
+                        </div>
+                    } />
+                    <Route path="/verification-results" element={
+                        <div className="min-h-screen" style={{ background: '#0f172a' }}>
+                            <Navigation />
+                            <div className="w-full">
+                                <VerificationResults />
                             </div>
                         </div>
                     } />

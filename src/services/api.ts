@@ -1,6 +1,13 @@
 import axios from 'axios';
-import { SitesProductTypesResponse, JsonSchema, AdapterPropertiesResponse, PropertyProductTypeResponse } from '../types/amazon';
+import {
+  SitesProductTypesResponse,
+  JsonSchema,
+  PropertyTemplateAttrResponse
+} from '../types/amazon';
 import { config } from '../config';
+
+// Configure axios default headers
+axios.defaults.headers.common['username'] = '181978';
 
 /**
  * API service for Amazon Listing AI Assistant
@@ -103,6 +110,43 @@ export const amazonApi = {
       }
     } catch (error: any) {
       throw new Error(`Error finding product types by property: ${error.message}`);
+    }
+  },
+
+  /**
+   * Search Product Type Template JsonAttr
+   * @param attributeName - The attribute name to search for
+   * @returns Promise with property template attributes
+   */
+  searchProductTypeTemplateJsonAttr: async (attributeName: string): Promise<PropertyTemplateAttrResponse[]> => {
+    try {
+      const data = {
+        args: JSON.stringify({
+          search: {
+            site: null,
+            productType: null,
+            attributeName: attributeName,
+            applicableAttributeTypeList: [],
+            type: 2
+          },
+          limit: 100,
+          offset: 0,
+          pageReqired: true
+        }),
+        method: "searchProductTypeTemplateJsonAttr"
+      };
+
+      const response = await axios.post(
+        `${config.API_BASE_URL}/productTypeTemplateJsonAttr`,
+        data
+      );
+      if (response.data && response.data.success && Array.isArray(response.data.rows)) {
+        return response.data.rows;
+      } else {
+        throw new Error("Failed to search Product Type Template JsonAttr: Invalid response format");
+      }
+    } catch (error: any) {
+      throw new Error(`Error searching Product Type Template JsonAttr: ${error.message}`);
     }
   }
 };

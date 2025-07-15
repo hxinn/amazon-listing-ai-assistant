@@ -28,3 +28,17 @@ export interface JsonSchema {
   title?: string;
   description?: string;
 }
+
+/**
+ * PropertyTemplateAttrResponse
+ */
+export interface PropertyTemplateAttrResponse {
+  id: number;
+  site: string;
+  productType: string;
+  attributeName: string;
+  attributeValue: string;
+  type: number;
+  applicableAttributeType: number;
+  adapterType: number;
+}

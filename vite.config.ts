@@ -8,17 +8,23 @@ export default defineConfig(({ mode }) => {
       plugins: [react()],
       define: {
         'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
+        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+        'process.env.OPENAI_API_KEY': JSON.stringify(env.OPENAI_API_KEY),
+        global: 'globalThis',
       },
       resolve: {
         alias: {
           '@': path.resolve(__dirname, '.'),
+          buffer: 'buffer'
         }
+      },
+      optimizeDeps: {
+        include: ['buffer']
       },
       server: {
         proxy: {
           '/api': {
-            target: 'http://10.100.1.155:8084',
+            target: 'http://192.168.8.176:8084',
             changeOrigin: true,
             rewrite: (path) => path.replace(/^\/api/, '')
           }

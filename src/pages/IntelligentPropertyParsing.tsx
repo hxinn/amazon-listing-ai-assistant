@@ -2,6 +2,7 @@ import React, {useState, useCallback, ChangeEvent, useEffect, useRef} from 'reac
 import {amazonApi} from '../services/api';
 import {aiService} from '../services/ai';
 import {JsonSchema} from '../types/amazon';
+import {validateData, parseSchemaProperties} from '../utils/valida.js';
 
 // Add custom styles for scrollbar hiding
 const scrollbarHideStyles = `
@@ -27,6 +28,11 @@ const IntelligentPropertyParsing: React.FC = () => {
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
     const [isCopied, setIsCopied] = useState<boolean>(false);
+    
+    // 验证相关状态
+    const [validationErrors, setValidationErrors] = useState<any[]>([]);
+    const [isValidationValid, setIsValidationValid] = useState<boolean | null>(null);
+    const [isValidating, setIsValidating] = useState<boolean>(false);
 
     // State variables for API integration
     const [sites, setSites] = useState<Record<string, string[]>>({});
@@ -256,6 +262,11 @@ const IntelligentPropertyParsing: React.FC = () => {
         setSelectedProperty(property);
         setSearchTerm('');
         setIsDropdownOpen(false);
+        
+        // 重置验证状态
+        setValidationErrors([]);
+        setIsValidationValid(null);
+        setGeneratedJson('');
     };
 
     // Handle site selection
@@ -411,6 +422,57 @@ const IntelligentPropertyParsing: React.FC = () => {
         }
     }, [selectedSite, selectedProductType]);
 
+    // 验证生成的 JSON
+    const validateGeneratedJson = async (jsonStr: string) => {
+        if (!selectedProperty || !schema) {
+            return;
+        }
+
+        setIsValidating(true);
+        setValidationErrors([]);
+        setIsValidationValid(null);
+
+        try {
+            // 解析生成的 JSON
+            const generatedData = JSON.parse(jsonStr);
+            
+            // 获取当前属性的子模式
+            const subSchema = schema.properties[selectedProperty];
+            
+            // 解析模式以处理 $ref 引用
+            const processedSchema = parseSchemaProperties({ 
+                type: 'object',
+                properties: { [selectedProperty]: subSchema },
+                $defs: schema.$defs
+            });
+
+            // 创建验证数据对象
+            const dataToValidate = { [selectedProperty]: generatedData };
+            
+            // 执行验证
+            const errors = validateData(dataToValidate, processedSchema);
+            
+            if (errors && errors.length > 0) {
+                setValidationErrors(errors);
+                setIsValidationValid(false);
+            } else {
+                setValidationErrors([]);
+                setIsValidationValid(true);
+            }
+        } catch (err: any) {
+            console.error('验证过程中出现错误:', err);
+            setValidationErrors([{
+                keyword: 'parse_error',
+                message: `JSON 解析失败: ${err.message}`,
+                instancePath: '',
+                schemaPath: ''
+            }]);
+            setIsValidationValid(false);
+        } finally {
+            setIsValidating(false);
+        }
+    };
+
     const handleGenerate = async () => {
         if (!selectedProperty || !schema) {
             setError("Please select a property and ensure a schema is loaded.");
@@ -421,16 +483,22 @@ const IntelligentPropertyParsing: React.FC = () => {
         setError(null);
         setGeneratedJson('');
         setIsCopied(false);
+        
+        // 重置验证状态
+        setValidationErrors([]);
+        setIsValidationValid(null);
 
         const subSchema = schema.properties[selectedProperty];
         // $defs.marketplace_id.default
         const language_tag = schema.$defs.language_tag.default;
         const marketplace_id = schema.$defs.marketplace_id.default;
 
-
         try {
-            const jsonStr = await aiService.generateJson(selectedProperty, subSchema, userReference, language_tag, marketplace_id);
+            const jsonStr = await aiService.generateJsonWithGeminiHttp(selectedProperty, subSchema, userReference, language_tag, marketplace_id);
             setGeneratedJson(jsonStr);
+            
+            // 生成完成后立即进行验证
+            await validateGeneratedJson(jsonStr);
         } catch (err: any) {
             setError(err.message);
         } finally {
@@ -950,15 +1018,64 @@ const IntelligentPropertyParsing: React.FC = () => {
                         <div className="w-1/2 flex flex-col gap-3">
                             <div className="rounded-2xl overflow-hidden h-full" style={{ background: 'rgba(30, 41, 59, 0.5)', backdropFilter: 'blur(10px)', border: '1px solid rgba(51, 65, 85, 0.5)' }}>
                                 <div className="flex justify-between items-center px-6 py-4 border-b border-gray-700">
-                                    <h3 className="text-lg font-semibold text-gray-200">Generated JSON</h3>
-                                    <button
-                                        className="px-3 py-1 text-sm font-medium text-white bg-gradient-to-r from-cyan-400 to-blue-500 border-none rounded cursor-pointer transition-all hover:opacity-90 disabled:cursor-default disabled:opacity-70"
-                                        onClick={handleCopy}
-                                        disabled={isCopied}
-                                    >
-                                        {isCopied ? 'Copied!' : 'Copy'}
-                                    </button>
+                                    <div className="flex items-center gap-3">
+                                        <h3 className="text-lg font-semibold text-gray-200">Generated JSON</h3>
+                                        {/* 验证状态指示器 */}
+                                        {isValidating && (
+                                            <div className="flex items-center gap-2 text-yellow-400">
+                                                <div className="spinner w-4 h-4"></div>
+                                                <span className="text-sm">验证中...</span>
+                                            </div>
+                                        )}
+                                        {!isValidating && isValidationValid === true && (
+                                            <div className="flex items-center gap-1 text-green-400">
+                                                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                                                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd"></path>
+                                                </svg>
+                                                <span className="text-sm font-medium">验证通过</span>
+                                            </div>
+                                        )}
+                                        {!isValidating && isValidationValid === false && (
+                                            <div className="flex items-center gap-1 text-red-400">
+                                                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                                                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd"></path>
+                                                </svg>
+                                                <span className="text-sm font-medium">验证失败</span>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            className="px-3 py-1 text-sm font-medium text-white bg-gradient-to-r from-purple-400 to-purple-600 border-none rounded cursor-pointer transition-all hover:opacity-90 disabled:cursor-default disabled:opacity-70"
+                                            onClick={() => validateGeneratedJson(generatedJson)}
+                                            disabled={isValidating || !generatedJson}
+                                        >
+                                            {isValidating ? '验证中...' : '重新验证'}
+                                        </button>
+                                        <button
+                                            className="px-3 py-1 text-sm font-medium text-white bg-gradient-to-r from-cyan-400 to-blue-500 border-none rounded cursor-pointer transition-all hover:opacity-90 disabled:cursor-default disabled:opacity-70"
+                                            onClick={handleCopy}
+                                            disabled={isCopied}
+                                        >
+                                            {isCopied ? 'Copied!' : 'Copy'}
+                                        </button>
+                                    </div>
                                 </div>
+                                
+                                {/* 验证错误显示 */}
+                                {validationErrors.length > 0 && (
+                                    <div className="px-6 py-3 bg-red-900/30 border-b border-red-700">
+                                        <h4 className="text-sm font-semibold text-red-300 mb-2">验证错误:</h4>
+                                        <div className="max-h-24 overflow-y-auto scrollbar-hide">
+                                            {validationErrors.map((error, index) => (
+                                                <div key={index} className="text-xs text-red-200 mb-1">
+                                                    <span className="font-medium">{error.instancePath || '根路径'}</span>: {error.message}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                
                                 <div className="bg-[#1a202c] text-[#e2e8f0] p-5 overflow-x-auto max-h-[500px] min-h-[200px]">
                                     <pre className="m-0 w-full font-mono text-sm whitespace-pre-wrap break-words leading-relaxed">
                                         <code>{generatedJson}</code>
