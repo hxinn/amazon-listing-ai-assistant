@@ -20,6 +20,7 @@ const App: React.FC = () => {
                             </div>
                         </div>
                     } />
+
                     <Route path="/automated-verification" element={
                         <div className="min-h-screen" style={{ background: '#0f172a' }}>
                             <Navigation />

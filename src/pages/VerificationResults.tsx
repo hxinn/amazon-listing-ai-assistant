@@ -44,6 +44,8 @@ const VerificationResults: React.FC<VerificationResultsProps> = () => {
     const [selectedResult, setSelectedResult] = useState<StoredVerificationResult | null>(null);
     const [isEditing, setIsEditing] = useState<boolean>(false);
     const [editedData, setEditedData] = useState<string>('');
+    const [editedStatus, setEditedStatus] = useState<string>('');
+    const [editedSyncStatus, setEditedSyncStatus] = useState<string>('');
     const [currentPage, setCurrentPage] = useState<number>(1);
     const [itemsPerPage] = useState<number>(10);
     const [isExporting, setIsExporting] = useState<boolean>(false);
@@ -64,6 +66,32 @@ const VerificationResults: React.FC<VerificationResultsProps> = () => {
         
         // 按属性名 -> 属性值 -> 站点分组
         results.forEach(result => {
+            // 处理失败的记录
+            if (result.status === 'failed') {
+                // 为失败记录创建一个特殊的值
+                const value = result.error || '处理失败';
+                
+                if (!propertyMap.has(result.property)) {
+                    propertyMap.set(result.property, new Map());
+                }
+                
+                const valueMap = propertyMap.get(result.property)!;
+                if (!valueMap.has(value)) {
+                    valueMap.set(value, new Map());
+                }
+                
+                const siteMap = valueMap.get(value)!;
+                const siteKey = `${result.site}_${result.productType}`;
+                
+                if (!siteMap.has(siteKey)) {
+                    siteMap.set(siteKey, []);
+                }
+                
+                siteMap.get(siteKey)!.push(result);
+                return;
+            }
+            
+            // 处理成功的记录
             if (!result.aiGeneratedData || result.status !== 'completed') return;
             
             try {
@@ -326,6 +354,8 @@ const VerificationResults: React.FC<VerificationResultsProps> = () => {
     const openEditModal = (result: StoredVerificationResult) => {
         setSelectedResult(result);
         setEditedData(formatAIData(result.aiGeneratedData));
+        setEditedStatus(result.status);
+        setEditedSyncStatus(result.syncStatus || '');
         setIsEditing(true);
     };
 
@@ -335,11 +365,19 @@ const VerificationResults: React.FC<VerificationResultsProps> = () => {
 
         try {
             // 验证JSON格式
-            JSON.parse(editedData);
+            const parsedData = JSON.parse(editedData);
+            
+            // 压缩JSON数据（去除多余空格和换行）
+            const compressedData = JSON.stringify(parsedData);
+            
+            // 验证压缩后的数据仍然是有效的JSON
+            JSON.parse(compressedData);
             
             const updatedResult: StoredVerificationResult = {
                 ...selectedResult,
-                aiGeneratedData: editedData,
+                aiGeneratedData: compressedData,
+                status: editedStatus as 'completed' | 'failed',
+                syncStatus: editedSyncStatus ? editedSyncStatus as 'pending' | 'syncing' | 'synced' | 'sync_failed' : undefined,
                 timestamp: Date.now()
             };
 
@@ -351,8 +389,8 @@ const VerificationResults: React.FC<VerificationResultsProps> = () => {
             );
             setResults(updatedResults);
             
-                    // 重新应用筛选条件
-        applyFilters();
+            // 重新应用筛选条件
+            applyFilters();
             
             setIsEditing(false);
             setSelectedResult(null);
@@ -366,6 +404,8 @@ const VerificationResults: React.FC<VerificationResultsProps> = () => {
         setIsEditing(false);
         setSelectedResult(null);
         setEditedData('');
+        setEditedStatus('');
+        setEditedSyncStatus('');
     };
 
     // 导出结果
@@ -471,6 +511,8 @@ const VerificationResults: React.FC<VerificationResultsProps> = () => {
     const viewDetails = (result: StoredVerificationResult) => {
         setSelectedResult(result);
         setEditedData(formatAIData(result.aiGeneratedData));
+        setEditedStatus(result.status);
+        setEditedSyncStatus(result.syncStatus || '');
         setIsEditing(false);
     };
 
@@ -494,6 +536,27 @@ const VerificationResults: React.FC<VerificationResultsProps> = () => {
     const handleSyncComplete = (result: BatchSyncResult) => {
         setSyncResults(result);
         setShowSyncResultsModal(true);
+    };
+
+    // 删除验证结果
+    const handleDeleteResult = async (result: StoredVerificationResult) => {
+        const confirmMessage = `⚠️ 确定要删除以下验证结果吗？\n\n📋 属性名: ${result.property}\n🌐 站点: ${result.site}\n📦 产品类型: ${result.productType}\n📅 创建时间: ${formatTimestamp(result.timestamp)}\n\n❌ 此操作不可撤销！`;
+        
+        if (!confirm(confirmMessage)) {
+            return;
+        }
+
+        try {
+            await verificationStorage.deleteResultById(result.id);
+            
+            // 重新加载所有数据以确保状态同步
+            await loadResults();
+            
+            alert('✅ 验证结果已成功删除');
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : '未知错误';
+            alert(`❌ 删除失败: ${errorMessage}`);
+        }
     };
 
     // 分页逻辑 - 对分组数据进行分页
@@ -738,87 +801,153 @@ const VerificationResults: React.FC<VerificationResultsProps> = () => {
                                             <span className="material-icons text-sm text-blue-400">public</span>
                                             <span className="text-sm font-medium text-gray-300">站点列表</span>
                                         </div>
-                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                                            {propertyGroup.valueGroups.flatMap(valueGroup => 
-                                                valueGroup.sites.map((siteInfo) => (
-                                                    <div 
-                                                        key={`${siteInfo.site}_${siteInfo.productType}_${valueGroup.value}`} 
-                                                        className="bg-gray-700/50 hover:bg-gray-700 rounded-lg p-3 cursor-pointer transition-all duration-200 border border-gray-600/30 hover:border-blue-500/50"
-                                                        onClick={() => {
-                                                            if (siteInfo.results.length > 0) {
-                                                                openEditModal(siteInfo.results[0]);
-                                                            }
-                                                        }}
-                                                    >
-                                                        {/* 站点信息 */}
-                                                        <div className="flex items-center justify-between mb-2">
-                                                            <div className="flex items-center gap-2">
-                                                                <span className="text-sm font-medium text-blue-300">{siteInfo.site}</span>
-                                                                <span className="text-xs text-gray-400 bg-gray-600 px-2 py-0.5 rounded-full">
-                                                                    {siteInfo.productType}
-                                                                </span>
-                                                            </div>
-                                                            <span className="material-icons text-sm text-gray-400 hover:text-blue-400 transition-colors">
-                                                                edit
-                                                            </span>
-                                                        </div>
-                                                        
-                                                        {/* 属性值展示 */}
-                                                        <div className="mb-3">
-                                                            <div className="flex items-center gap-2 mb-1">
-                                                                <span className="material-icons text-xs text-indigo-400">label</span>
-                                                                <span className="text-xs font-medium text-indigo-300">属性值:</span>
-                                                            </div>
-                                                            <div className="bg-gray-900/50 rounded p-2 border border-gray-600/30">
-                                                                <pre className="text-xs text-gray-300 font-mono whitespace-pre-wrap overflow-auto max-h-16 custom-scrollbar">
-                                                                    {(() => {
-                                                                        // 格式化显示属性值
-                                                                        const value = valueGroup.value;
-                                                                        
-                                                                        // 如果值看起来像JSON，尝试格式化
-                                                                        if (value.startsWith('{') || value.startsWith('[')) {
-                                                                            try {
-                                                                                const parsed = JSON.parse(value);
-                                                                                return JSON.stringify(parsed, null, 2);
-                                                                            } catch {
-                                                                                return value;
+                                        
+                                        {/* 表格展示 */}
+                                        <div className="overflow-x-auto">
+                                            <table className="w-full bg-gray-900/40 rounded-lg overflow-hidden">
+                                                <thead>
+                                                    <tr className="bg-gray-800 border-b border-gray-700">
+                                                        <th className="text-left p-3 text-sm font-medium text-gray-300">站点</th>
+                                                        <th className="text-left p-3 text-sm font-medium text-gray-300">状态</th>
+                                                        <th className="text-left p-3 text-sm font-medium text-gray-300">产品类型</th>
+                                                        <th className="text-left p-3 text-sm font-medium text-gray-300">AI生成数据</th>
+                                                        <th className="text-center p-3 text-sm font-medium text-gray-300">操作</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {propertyGroup.valueGroups.flatMap(valueGroup => 
+                                                        valueGroup.sites.map((siteInfo) => (
+                                                            <tr 
+                                                                key={`${siteInfo.site}_${siteInfo.productType}_${valueGroup.value}`}
+                                                                className="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors"
+                                                            >
+                                                                {/* 站点 */}
+                                                                <td className="p-3">
+                                                                    <div className="flex items-center gap-2">
+                                                                        <span className="text-sm font-medium text-blue-300">{siteInfo.site}</span>
+                                                                    </div>
+                                                                </td>
+                                                                
+                                                                {/* 状态 */}
+                                                                <td className="p-3">
+                                                                    <div className="flex items-center gap-2">
+                                                                        {siteInfo.successCount > 0 && (
+                                                                            <div className="flex items-center gap-1">
+                                                                                <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+                                                                                <span className="text-xs text-green-400">成功 </span>
+                                                                            </div>
+                                                                        )}
+                                                                        {siteInfo.failedCount > 0 && (
+                                                                            <div className="flex items-center gap-1">
+                                                                                <span className="w-2 h-2 bg-red-500 rounded-full"></span>
+                                                                                <span className="text-xs text-red-400">失败 </span>
+                                                                            </div>
+                                                                        )}
+                                                                        {siteInfo.syncedCount > 0 && (
+                                                                            <div className="flex items-center gap-1">
+                                                                                <span className="w-2 h-2 bg-emerald-500 rounded-full"></span>
+                                                                                <span className="text-xs text-emerald-400">已同步</span>
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                </td>
+                                                                
+                                                                {/* 产品类型 */}
+                                                                <td className="p-3">
+                                                                    <span className="text-xs text-gray-400 bg-gray-600 px-2 py-1 rounded-full">
+                                                                        {(() => {
+                                                                            // 从AI生成数据中获取产品类型，如果没有则使用默认的productType
+                                                                            const firstResult = siteInfo.results[0];
+                                                                            if (firstResult?.aiGeneratedData && firstResult.status === 'completed') {
+                                                                                try {
+                                                                                    const parsed = JSON.parse(firstResult.aiGeneratedData);
+                                                                                    const firstItem = Array.isArray(parsed) ? parsed[0] : parsed;
+                                                                                    // 尝试从AI数据中获取产品类型
+                                                                                    const aiProductType = firstItem?.product_type || 
+                                                                                                         firstItem?.productType || 
+                                                                                                         firstItem?.type;
+                                                                                    return aiProductType || siteInfo.productType;
+                                                                                } catch {
+                                                                                    return siteInfo.productType;
+                                                                                }
                                                                             }
-                                                                        }
-                                                                        
-                                                                        return value;
-                                                                    })()}
-                                                                </pre>
-                                                            </div>
-                                                        </div>
-                                                        
-                                                        {/* 统计信息 */}
-                                                        <div className="flex items-center gap-2 text-xs">
-                                                            <div className="flex items-center gap-1">
-                                                                <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
-                                                                <span className="text-gray-400">{siteInfo.results.length}</span>
-                                                            </div>
-                                                            {siteInfo.successCount > 0 && (
-                                                                <div className="flex items-center gap-1">
-                                                                    <span className="w-2 h-2 bg-green-500 rounded-full"></span>
-                                                                    <span className="text-green-400">{siteInfo.successCount}</span>
-                                                                </div>
-                                                            )}
-                                                            {siteInfo.failedCount > 0 && (
-                                                                <div className="flex items-center gap-1">
-                                                                    <span className="w-2 h-2 bg-red-500 rounded-full"></span>
-                                                                    <span className="text-red-400">{siteInfo.failedCount}</span>
-                                                                </div>
-                                                            )}
-                                                            {siteInfo.syncedCount > 0 && (
-                                                                <div className="flex items-center gap-1">
-                                                                    <span className="w-2 h-2 bg-emerald-500 rounded-full"></span>
-                                                                    <span className="text-emerald-400">{siteInfo.syncedCount}</span>
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                ))
-                                            )}
+                                                                            return siteInfo.productType;
+                                                                        })()}
+                                                                    </span>
+                                                                </td>
+                                                                
+                                                                {/* AI生成数据 */}
+                                                                <td className="p-3">
+                                                                    <div className="max-w-md">
+                                                                        <div className="bg-gray-800/50 rounded p-2 border border-gray-600/30">
+                                                                            <pre className="text-xs text-gray-300 font-mono whitespace-pre-wrap overflow-auto max-h-20 custom-scrollbar">
+                                                                                {(() => {
+                                                                                    // 获取第一个结果的AI数据进行展示
+                                                                                    const firstResult = siteInfo.results[0];
+                                                                                    
+                                                                                    // 处理失败的记录
+                                                                                    if (firstResult?.status === 'failed') {
+                                                                                        return firstResult.error || '处理失败';
+                                                                                    }
+                                                                                    
+                                                                                    if (!firstResult?.aiGeneratedData) {
+                                                                                        return '暂无数据';
+                                                                                    }
+                                                                                    
+                                                                                    // 直接展示AI生成的数据，不进行JSON格式化
+                                                                                    const data = firstResult.aiGeneratedData;
+                                                                                    return data.length > 200 ? 
+                                                                                        data.substring(0, 200) + '...' : 
+                                                                                        data;
+                                                                                })()}
+                                                                            </pre>
+                                                                        </div>
+                                                                    </div>
+                                                                </td>
+                                                                
+                                                                {/* 操作 */}
+                                                                <td className="p-3 text-center">
+                                                                    <div className="flex items-center justify-center gap-2">
+                                                                        <button
+                                                                            onClick={() => {
+                                                                                if (siteInfo.results.length > 0) {
+                                                                                    viewDetails(siteInfo.results[0]);
+                                                                                }
+                                                                            }}
+                                                                            className="text-blue-400 hover:text-blue-300 hover:bg-blue-900/20 p-1 rounded transition-all duration-200"
+                                                                            title="查看详情"
+                                                                        >
+                                                                            <span className="material-icons text-sm">visibility</span>
+                                                                        </button>
+                                                                        <button
+                                                                            onClick={() => {
+                                                                                if (siteInfo.results.length > 0) {
+                                                                                    openEditModal(siteInfo.results[0]);
+                                                                                }
+                                                                            }}
+                                                                            className="text-yellow-400 hover:text-yellow-300 hover:bg-yellow-900/20 p-1 rounded transition-all duration-200"
+                                                                            title="编辑验证结果"
+                                                                        >
+                                                                            <span className="material-icons text-sm">edit</span>
+                                                                        </button>
+                                                                        <button
+                                                                            onClick={() => {
+                                                                                if (siteInfo.results.length > 0) {
+                                                                                    handleDeleteResult(siteInfo.results[0]);
+                                                                                }
+                                                                            }}
+                                                                            className="text-red-400 hover:text-red-300 hover:bg-red-900/20 p-1 rounded transition-all duration-200"
+                                                                            title="删除验证结果"
+                                                                        >
+                                                                            <span className="material-icons text-sm">delete</span>
+                                                                        </button>
+                                                                    </div>
+                                                                </td>
+                                                            </tr>
+                                                        ))
+                                                    )}
+                                                </tbody>
+                                            </table>
                                         </div>
                                     </div>
                                 )}
@@ -928,35 +1057,78 @@ const VerificationResults: React.FC<VerificationResultsProps> = () => {
                                 </div>
                             </div>
 
+                            {/* 状态信息编辑区域 */}
+                            {isEditing && (
+                                <div className="mb-6 p-4 bg-yellow-900/20 border border-yellow-500/30 rounded-lg">
+                                    <div className="flex items-center gap-2 mb-3">
+                                        <span className="material-icons text-yellow-400">edit</span>
+                                        <h4 className="text-lg font-medium text-yellow-400">编辑状态信息</h4>
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-300 mb-2">
+                                                <span className="material-icons mr-1 text-sm">task_alt</span>
+                                                验证状态
+                                            </label>
+                                            <select
+                                                value={editedStatus}
+                                                onChange={(e) => setEditedStatus(e.target.value)}
+                                                className="w-full p-3 bg-gray-700 border border-gray-600 rounded-lg text-gray-200 focus:ring-2 focus:ring-yellow-500 focus:border-transparent"
+                                            >
+                                                <option value="completed">✅ 成功</option>
+                                                <option value="failed">❌ 失败</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-300 mb-2">
+                                                <span className="material-icons mr-1 text-sm">sync</span>
+                                                同步状态
+                                            </label>
+                                            <select
+                                                value={editedSyncStatus}
+                                                onChange={(e) => setEditedSyncStatus(e.target.value)}
+                                                className="w-full p-3 bg-gray-700 border border-gray-600 rounded-lg text-gray-200 focus:ring-2 focus:ring-yellow-500 focus:border-transparent"
+                                            >
+                                                <option value="">⚪ 未同步</option>
+                                                <option value="pending">⏳ 待同步</option>
+                                                <option value="syncing">🔄 同步中</option>
+                                                <option value="synced">✅ 已同步</option>
+                                                <option value="sync_failed">❌ 同步失败</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
                                 <div>
                                     <label className="block text-sm font-medium text-gray-400 mb-1">状态</label>
                                     <div className="p-2 bg-gray-700 rounded">
                                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                                            selectedResult.status === 'completed' 
+                                            (isEditing ? editedStatus : selectedResult.status) === 'completed' 
                                                 ? 'bg-green-900/50 text-green-400 border border-green-500/30'
                                                 : 'bg-red-900/50 text-red-400 border border-red-500/30'
                                         }`}>
-                                            {selectedResult.status === 'completed' ? '成功' : '失败'}
+                                            {(isEditing ? editedStatus : selectedResult.status) === 'completed' ? '成功' : '失败'}
                                         </span>
                                     </div>
                                 </div>
                                 <div>
                                     <label className="block text-sm font-medium text-gray-400 mb-1">同步状态</label>
                                     <div className="p-2 bg-gray-700 rounded">
-                                        {selectedResult.syncStatus ? (
+                                        {(isEditing ? editedSyncStatus : selectedResult.syncStatus) ? (
                                             <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                                                selectedResult.syncStatus === 'synced' 
+                                                (isEditing ? editedSyncStatus : selectedResult.syncStatus) === 'synced' 
                                                     ? 'bg-green-900/50 text-green-400 border border-green-500/30'
-                                                    : selectedResult.syncStatus === 'syncing'
+                                                    : (isEditing ? editedSyncStatus : selectedResult.syncStatus) === 'syncing'
                                                     ? 'bg-yellow-900/50 text-yellow-400 border border-yellow-500/30'
-                                                    : selectedResult.syncStatus === 'sync_failed'
+                                                    : (isEditing ? editedSyncStatus : selectedResult.syncStatus) === 'sync_failed'
                                                     ? 'bg-red-900/50 text-red-400 border border-red-500/30'
                                                     : 'bg-gray-900/50 text-gray-400 border border-gray-500/30'
                                             }`}>
-                                                {selectedResult.syncStatus === 'synced' ? '已同步' : 
-                                                 selectedResult.syncStatus === 'syncing' ? '同步中' :
-                                                 selectedResult.syncStatus === 'sync_failed' ? '同步失败' : '待同步'}
+                                                {(isEditing ? editedSyncStatus : selectedResult.syncStatus) === 'synced' ? '已同步' : 
+                                                 (isEditing ? editedSyncStatus : selectedResult.syncStatus) === 'syncing' ? '同步中' :
+                                                 (isEditing ? editedSyncStatus : selectedResult.syncStatus) === 'sync_failed' ? '同步失败' : '待同步'}
                                             </span>
                                         ) : (
                                             <span className="px-2 py-1 rounded-full text-xs font-medium bg-gray-900/50 text-gray-400 border border-gray-500/30">
@@ -1006,15 +1178,37 @@ const VerificationResults: React.FC<VerificationResultsProps> = () => {
                             {/* AI生成的数据 */}
                             <div>
                                 <label className="block text-sm font-medium text-gray-400 mb-1">
-                                    AI生成的数据 {isEditing && <span className="text-yellow-400">(可编辑)</span>}
+                                    AI生成的数据 {isEditing && <span className="text-yellow-400">(可编辑，保存时将自动压缩)</span>}
                                 </label>
                                 {isEditing ? (
-                                    <textarea
-                                        value={editedData}
-                                        onChange={(e) => setEditedData(e.target.value)}
-                                        className="w-full h-64 p-3 bg-gray-900 border border-gray-600 rounded font-mono text-sm text-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent custom-scrollbar"
-                                        placeholder="请输入有效的JSON数据..."
-                                    />
+                                    <div className="space-y-2">
+                                        <textarea
+                                            value={editedData}
+                                            onChange={(e) => setEditedData(e.target.value)}
+                                            className="w-full h-64 p-3 bg-gray-900 border border-gray-600 rounded font-mono text-sm text-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent custom-scrollbar"
+                                            placeholder="请输入有效的JSON数据..."
+                                        />
+                                        <div className="flex items-center justify-between">
+                                            <div className="flex items-center gap-2 text-xs text-gray-500">
+                                                <span className="material-icons text-sm">info</span>
+                                                <span>编辑时显示格式化的JSON便于阅读，保存时将自动压缩以节省存储空间</span>
+                                            </div>
+                                            <button
+                                                onClick={() => {
+                                                    try {
+                                                        const parsed = JSON.parse(editedData);
+                                                        setEditedData(JSON.stringify(parsed, null, 2));
+                                                    } catch (error) {
+                                                        alert('JSON格式错误，无法格式化');
+                                                    }
+                                                }}
+                                                className="text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded transition-colors flex items-center gap-1"
+                                            >
+                                                <span className="material-icons text-sm">code</span>
+                                                格式化JSON
+                                            </button>
+                                        </div>
+                                    </div>
                                 ) : (
                                     <pre className="w-full h-64 p-3 bg-gray-900 border border-gray-600 rounded font-mono text-sm text-gray-300 overflow-auto custom-scrollbar">
                                         {editedData}

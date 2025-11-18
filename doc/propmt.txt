@@ -1,0 +1,45 @@
+# 计量单位转换指导
+
+## 基础信息
+- 用户提供的productInfo长度单位为cm（厘米），重量单位为g（克）
+- productInfo对象包含：length（长度）、width（宽度）、height（高度）、weight（重量）
+
+## 动态模板语法
+使用 `${表达式}` 语法进行动态值替换，支持JavaScript表达式计算。
+
+### 基础用法示例
+```json
+[{"length": "${productInfo.length.toFixed(2)}", "unit": "centimeters"}]
+```
+
+### 单位转换示例
+当需要转换单位时，在表达式中进行计算：
+
+#### 长度单位转换
+- **厘米转英寸**: `${(productInfo.length * 0.393701).toFixed(2)}`
+- **厘米转英尺**: `${(productInfo.length * 0.0328084).toFixed(2)}`
+
+#### 重量单位转换  
+- **克转盎司**: `${(productInfo.weight * 0.035274).toFixed(2)}`
+- **克转磅**: `${(productInfo.weight * 0.00220462).toFixed(2)}`
+
+### 复杂结构示例
+```json
+[{
+  "height": {"unit": "inches", "value": "${(productInfo.height * 0.393701).toFixed(2)}"},
+  "length": {"unit": "inches", "value": "${(productInfo.length * 0.393701).toFixed(2)}"},
+  "width": {"unit": "inches", "value": "${(productInfo.width * 0.393701).toFixed(2)}"}
+}]
+```
+
+## 常用转换系数
+- 厘米 → 英寸: × 0.393701
+- 厘米 → 英尺: × 0.0328084
+- 克 → 盎司: × 0.035274
+- 克 → 磅: × 0.00220462
+
+## 注意事项
+1. 表达式支持数学运算和JavaScript内置方法
+2. 使用 `.toFixed(2)` 保留两位小数
+3. 复杂表达式需要用括号包围，如 `${(value * coefficient).toFixed(2)}`
+4. 确保JSON格式正确，字符串值需要双引号包围

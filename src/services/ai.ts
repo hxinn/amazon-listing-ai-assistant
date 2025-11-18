@@ -3,6 +3,7 @@ import axios from 'axios';
 import { JsonSchema } from '../types/amazon';
 import { rateLimiter } from '../utils/rateLimiter';
 import { config } from '../config';
+import { parseSchemaProperties } from '../utils/valida.js';
 
 /**
  * Amazon Listing system prompt used for both OpenAI and Google AI
@@ -46,6 +47,8 @@ const AMAZON_LISTING_SYSTEM_PROMPT = `你是一个高度专业化且经验丰富
    * 只输出原始 JSON 对象本身，而不输出任何标记符、注释或其他解释性文本。
 ---
 **请记住：** 你的目标是最大限度地减少人工干预，确保生成的Listing属性符合Amazon的规范，提高上架效率和准确性。`;
+
+const UNIT_PROMPT = "对于计量单位属性，使用动态模版进行替换。例: [{\"length\":\"${sku.length}\", \"unit\": \"centimeters\"}], 其中\"${sku.length}\"为计算出的动态模版;动态模版中sku.length,是程序提供的，计量单位不存在`centimeters`时，需要将动态模板的值乘以转换数值，转换为对应的地区常用计量单位例如：centimeters 转换 inches，${sku.length *  0.393701} 需要乘以`0.393701` *转换单位*返回"
 
 /**
  * Generate user prompt based on schema, reference, marketplace and language
@@ -345,14 +348,12 @@ export const aiService = {
                     // Use rate limiter to limit concurrent API calls
                     return await rateLimiter.execute(async () => {
                         return await ai.models.generateContent({
-                            model: "gemini-2.5-flash-lite-preview-06-17",
+                            model: "gemini-2.5-pro",
                             contents: userPrompt,
                             config: {
                                 responseMimeType: "application/json",
                                 systemInstruction: AMAZON_LISTING_SYSTEM_PROMPT,
-                                thinkingConfig: {
-                                    thinkingBudget: 0, 
-                                }
+                                temperature: 0.1
                             },
                         });
                     });
@@ -578,6 +579,137 @@ export const aiService = {
             }
         } catch (error: any) {
             throw new Error(`Gemini HTTP generation failed: ${error.message}`);
+        }
+    },
+
+    /**
+     * Generate JSON data for multiple sites grouped by region using Gemini HTTP API
+     * @param selectedProperty - The selected property
+     * @param regionSchemas - Object mapping region names to their schemas and sites
+     * @param userReference - The user reference (optional)
+     * @returns Promise with generated JSON grouped by region
+     */
+    generateJsonByRegion: async (
+        selectedProperty: string,
+        regionSchemas: Record<string, { schemas: Record<string, JsonSchema>, sites: string[] }>,
+        userReference: string,
+    ): Promise<Record<string, Record<string, string>>> => {
+        const results: Record<string, Record<string, string>> = {};
+
+        try {
+            // Process each region
+            for (const [region, regionData] of Object.entries(regionSchemas)) {
+                const { schemas, sites } = regionData;
+                const regionResults: Record<string, string> = {};
+
+                // Process each site individually to ensure site-specific schema compliance
+                for (const site of sites) {
+                    const siteSchema = schemas[site];
+                    if (!siteSchema || !siteSchema.properties[selectedProperty]) {
+                        console.warn(`Property ${selectedProperty} not found in schema for site ${site}`);
+                        regionResults[site] = `Error: Property ${selectedProperty} not found in schema`;
+                        continue;
+                    }
+
+                    // 解析模式以处理 $ref 引用
+                    const processedSchema = parseSchemaProperties({
+                        type: 'object',
+                        properties: { [selectedProperty]: siteSchema.properties[selectedProperty] },
+                        $defs: siteSchema.$defs
+                    });
+
+                    // Get the specific sub-schema for this property
+                    const subSchema = processedSchema.properties[selectedProperty];
+
+
+                    // Create site-specific prompt
+                    const sitePrompt = `**站点特定信息生成请求**
+
+目标站点: ${site}
+区域: ${region}
+属性名称: ${selectedProperty}
+
+**该站点的Schema约束:**
+\`\`\`json
+${JSON.stringify(subSchema, null, 2)}
+\`\`\`
+
+${userReference ?
+                            `**用户提供的参考信息:**
+${userReference}
+
+请基于用户提供的参考信息，结合该站点的具体要求生成数据。确保生成的JSON完全符合该站点的schema约束。`
+                            : `请基于提供的schema约束，为该站点生成一个完整且有效的示例JSON对象。`
+                        }
+
+**生成要求:**
+1. 严格遵守该站点的JSON Schema约束和数据类型要求
+2. 使用该站点的主要语言生成文本内容
+3. 采用该站点常用的计量单位（如需要单位转换，请自动处理）
+4. 考虑该地区的文化偏好和购物习惯
+5. 确保生成的数据适合该站点的Amazon marketplace
+6. 如果schema中有枚举值(enum)，优先从枚举列表中选择最合适的值
+7. 对于必填字段(required)，确保提供有效数据
+8. 跳过\`marketplace_id\`和\`language_tag\`属性（如果存在且非必填）
+
+请生成符合${site}站点要求的JSON数据：`;
+
+                    try {
+                        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+                        
+                        // Use rate limiter to limit concurrent API calls
+                        const response = await rateLimiter.execute(async () => {
+                            return await ai.models.generateContent({
+                                model: "gemini-2.5-flash-lite-preview-06-17",
+                                contents: AMAZON_LISTING_SYSTEM_PROMPT + "\n\n" + sitePrompt,
+                                config: {
+                                    responseMimeType: "application/json",
+                                    temperature: 0.1,
+                                    maxOutputTokens: 4096,
+                                    thinkingConfig: {
+                                        thinkingBudget: 0,
+                                    }
+                                }
+                            });
+                        });
+
+                        const responseText = response.text ?? '';
+                        if (!responseText) {
+                            throw new Error("AI response is empty or undefined");
+                        }
+                        let jsonStr = responseText.trim();
+
+                        // Remove code fences if present
+                        const fenceRegex = /^```(\w*)?\s*\n?(.*?)\n?\s*```$/s;
+                        const match = jsonStr.match(fenceRegex);
+                        if (match && match[2]) {
+                            jsonStr = match[2].trim();
+                        }
+
+                        try {
+                            // Validate that the response is valid JSON
+                            JSON.parse(jsonStr);
+                            regionResults[site] = jsonStr;
+                        } catch (e) {
+                            const error = e instanceof Error ? e : new Error(String(e));
+                            throw new Error(`AI response is not valid JSON: ${error.message}`);
+                        }
+
+                    } catch (err: any) {
+                        console.error(`Failed to generate JSON for site ${site}:`, err.message);
+                        regionResults[site] = `Error: ${err.message}`;
+                    }
+
+                    // Add a small delay between site requests to avoid overwhelming the API
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
+
+                results[region] = regionResults;
+            }
+
+            return results;
+        } catch (error: any) {
+            throw new Error(`Region-based generation failed: ${error.message}`);
         }
     }
 };

@@ -66,6 +66,12 @@ const AutomatedPropertyVerification: React.FC = () => {
     const [retryProgress, setRetryProgress] = useState<number>(0);
     const [totalRetryTasks, setTotalRetryTasks] = useState<number>(0);
 
+    // Manual property verification state
+    const [manualProperty, setManualProperty] = useState<string>('');
+    const [isManualVerifying, setIsManualVerifying] = useState<boolean>(false);
+    const [manualProgress, setManualProgress] = useState<number>(0);
+    const [totalManualTasks, setTotalManualTasks] = useState<number>(0);
+
     // Cache for adapter properties
     const adapterPropertiesCache = useRef<string[]>([]);
 
@@ -1313,6 +1319,188 @@ const AutomatedPropertyVerification: React.FC = () => {
         }
     };
 
+    // Manual property verification function
+    const handleManualPropertyVerification = async () => {
+        if (!manualProperty.trim()) {
+            addLogMessage('error', '请输入有效的属性名');
+            return;
+        }
+
+        const property = manualProperty.trim();
+        setIsManualVerifying(true);
+        setManualProgress(0);
+        setTotalManualTasks(0);
+        addLogMessage('info', `开始手动验证属性: ${property}`);
+
+        try {
+            // Step 1: Get reference properties
+            addLogMessage('info', `获取属性 '${property}' 的参考数据...`);
+            const references = await getReferenceProperties(property);
+
+            // Step 2: Find sites and product types
+            addLogMessage('info', `查找属性 '${property}' 对应的站点和产品类型...`);
+            const siteProductTypes = await findProductTypes(property);
+            const sites = Object.keys(siteProductTypes);
+
+            if (sites.length === 0) {
+                addLogMessage('error', `属性 '${property}' 没有找到对应的站点和产品类型`);
+                setIsManualVerifying(false);
+                return;
+            }
+
+            addLogMessage('info', `找到 ${sites.length} 个站点需要验证: ${sites.join(', ')}`);
+            setTotalManualTasks(sites.length);
+
+            // Process each site and product type
+            let processedCount = 0;
+            let successCount = 0;
+            let failedCount = 0;
+
+            for (const site of sites) {
+                const productType = siteProductTypes[site];
+                addLogMessage('info', `验证 ${site}-${productType}-${property}...`);
+
+                try {
+                    // Get schema
+                    const schema = await getSchema(site, productType);
+
+                    // Validate property exists in schema
+                    if (!schema.properties[property]) {
+                        addLogMessage('error', `属性 '${property}' 在 ${site}-${productType} 的架构中不存在`);
+                        failedCount++;
+                        processedCount++;
+                        setManualProgress(processedCount);
+                        continue;
+                    }
+
+                    // Get property schema
+                    const propertySchema = schema.properties[property];
+                    const preferredMarkets = ['us', 'uk'];
+                    const reference = references.find(ref =>
+                        ref?.site && preferredMarkets.some(market =>
+                            ref.site.toLowerCase().includes(market))
+                    ) || references[0];
+
+                    const referenceValue = reference ? reference.attributeValue : '';
+
+                    // Generate AI data
+                    const language_tag = schema.$defs.language_tag.default;
+                    const marketplace_id = schema.$defs.marketplace_id.default;
+
+                    const aiData = await aiService.generateJson(
+                        property,
+                        propertySchema,
+                        referenceValue,
+                        language_tag,
+                        marketplace_id
+                    );
+
+                    addLogMessage('success', `AI数据生成成功: ${site}-${productType}-${property}:[${referenceValue}], ${JSON.stringify(aiData)}`);
+
+                    let finalStatus: 'completed' | 'failed' = 'completed';
+                    let finalError: string | undefined = undefined;
+
+                    try {
+                        // 解析模式以处理 $ref 引用
+                        const processedSchema = parseSchemaProperties({
+                            type: 'object',
+                            properties: { [property]: propertySchema },
+                            $defs: schema.$defs
+                        });
+
+                        // 创建验证数据对象
+                        const aiDataArray = JSON.parse(aiData);
+                        const dataToValidate = { [property]: aiDataArray };
+                        
+                        // 验证AI数据
+                        const validationErrors = validateData(dataToValidate, processedSchema);
+
+                        if (validationErrors && validationErrors.length > 0) {
+                            // 验证失败，记录错误详情
+                            const errorDetails = validationErrors.map(error =>
+                                `${error.instancePath || 'root'}: ${error.message} (keyword: ${error.keyword})`
+                            ).join('; ');
+
+                            finalError = `AI数据验证失败: ${errorDetails}`;
+                            finalStatus = 'failed';
+                            addLogMessage('error', `${site}-${productType}-${property} 验证失败: ${finalError}`);
+                            failedCount++;
+                        } else {
+                            // 验证成功
+                            addLogMessage('success', `${site}-${productType}-${property} 验证通过`);
+                            successCount++;
+                        }
+                    } catch (validationError) {
+                        // 验证过程中出现异常
+                        const validationErrorMessage = validationError instanceof Error ? validationError.message : 'Unknown validation error';
+                        finalError = `验证过程异常: ${validationErrorMessage}`;
+                        finalStatus = 'failed';
+                        addLogMessage('error', `${site}-${productType}-${property} 验证异常: ${finalError}`);
+                        failedCount++;
+                    }
+
+                    // 使用saveResult强制保存（插入或覆盖）
+                    try {
+                        await verificationStorage.saveResult({
+                            property,
+                            site,
+                            productType,
+                            aiGeneratedData: JSON.stringify(aiData),
+                            status: finalStatus,
+                            error: finalError,
+                            language_tag,
+                            marketplace_id
+                        });
+
+                        addLogMessage('success', `${site}-${productType}-${property} 验证结果已保存到数据库`);
+                    } catch (storageError) {
+                        const storageErrorMessage = storageError instanceof Error ? storageError.message : 'Unknown storage error';
+                        addLogMessage('error', `保存验证结果失败: ${storageErrorMessage}`);
+                    }
+
+                    // Update task results in UI
+                    const taskResult: TaskResult = {
+                        property,
+                        site,
+                        productType,
+                        aiGeneratedData: JSON.stringify(aiData),
+                        status: finalStatus as 'completed' | 'failed' | 'pending' | 'processing',
+                        error: finalError
+                    };
+
+                    setTaskResults(prev => {
+                        // 移除已存在的相同记录
+                        const filteredResults = prev.filter(task => 
+                            !(task.site === site && task.productType === productType && task.property === property)
+                        );
+                        return [...filteredResults, taskResult];
+                    });
+
+                } catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                    addLogMessage('error', `验证失败: ${site}-${productType}-${property} - ${errorMessage}`);
+                    failedCount++;
+                }
+
+                processedCount++;
+                setManualProgress(processedCount);
+            }
+
+            // Update storage stats
+            const updatedStats = await verificationStorage.getStorageStats();
+            setStorageStats(updatedStats);
+
+            addLogMessage('success', `手动验证完成！属性 '${property}' 在 ${processedCount} 个站点中验证，成功 ${successCount} 个，失败 ${failedCount} 个`);
+
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            addLogMessage('error', `手动验证属性 '${property}' 失败: ${errorMessage}`);
+        } finally {
+            setIsManualVerifying(false);
+            setManualProperty(''); // 清空输入框
+        }
+    };
+
 
 
     // Add log message with current timestamp
@@ -1410,18 +1598,21 @@ const AutomatedPropertyVerification: React.FC = () => {
                                 <div>
                                     <div className="flex justify-between items-center mb-1">
                                         <span className="text-sm font-medium text-gray-300">
-                                            {isRetryingFailed ? '重新验证进度' :
-                                                isDataCleaning ? '数据清洗进度' :
-                                                    '验证任务进度'}
+                                            {isManualVerifying ? '手动验证进度' :
+                                                isRetryingFailed ? '重新验证进度' :
+                                                    isDataCleaning ? '数据清洗进度' :
+                                                        '验证任务进度'}
                                         </span>
                                         <div className="flex items-center">
-                                            <span className={`text-sm font-medium mr-2 ${isRetryingFailed ? 'text-red-400' :
-                                                isDataCleaning ? 'text-orange-400' :
-                                                    'text-blue-400'
+                                            <span className={`text-sm font-medium mr-2 ${isManualVerifying ? 'text-purple-400' :
+                                                isRetryingFailed ? 'text-red-400' :
+                                                    isDataCleaning ? 'text-orange-400' :
+                                                        'text-blue-400'
                                                 }`}>
-                                                {isRetryingFailed ? `${retryProgress}/${totalRetryTasks}` :
-                                                    isDataCleaning ? `${cleaningProgress}/${totalCleaningTasks}` :
-                                                        `${taskProgress}/${totalTasks}`}
+                                                {isManualVerifying ? `${manualProgress}/${totalManualTasks}` :
+                                                    isRetryingFailed ? `${retryProgress}/${totalRetryTasks}` :
+                                                        isDataCleaning ? `${cleaningProgress}/${totalCleaningTasks}` :
+                                                            `${taskProgress}/${totalTasks}`}
                                             </span>
                                             <button
                                                 className="text-gray-400 hover:text-blue-400 transition-colors"
@@ -1435,15 +1626,17 @@ const AutomatedPropertyVerification: React.FC = () => {
                                     </div>
                                     <div className="w-full bg-gray-700 rounded-full h-2.5">
                                         <div
-                                            className={`h-2.5 rounded-full transition-all duration-300 ${isRetryingFailed ? 'bg-red-500' :
-                                                isDataCleaning ? 'bg-orange-500' :
-                                                    'bg-blue-500'
+                                            className={`h-2.5 rounded-full transition-all duration-300 ${isManualVerifying ? 'bg-purple-500' :
+                                                isRetryingFailed ? 'bg-red-500' :
+                                                    isDataCleaning ? 'bg-orange-500' :
+                                                        'bg-blue-500'
                                                 }`}
                                             style={{
-                                                width: `${isRetryingFailed ? (totalRetryTasks > 0 ? (retryProgress / totalRetryTasks) * 100 : 0) :
-                                                    isDataCleaning ? (totalCleaningTasks > 0 ? (cleaningProgress / totalCleaningTasks) * 100 : 0) :
-                                                        (totalTasks > 0 ? (taskProgress / totalTasks) * 100 : 0)
-                                                    }%`
+                                                width: `${isManualVerifying ? (totalManualTasks > 0 ? (manualProgress / totalManualTasks) * 100 : 0) :
+                                                    isRetryingFailed ? (totalRetryTasks > 0 ? (retryProgress / totalRetryTasks) * 100 : 0) :
+                                                        isDataCleaning ? (totalCleaningTasks > 0 ? (cleaningProgress / totalCleaningTasks) * 100 : 0) :
+                                                            (totalTasks > 0 ? (taskProgress / totalTasks) * 100 : 0)
+                                                        }%`
                                             }}
                                         ></div>
                                     </div>
@@ -1451,31 +1644,75 @@ const AutomatedPropertyVerification: React.FC = () => {
 
                                 <div>
                                     <p className="text-sm font-medium text-gray-300 mb-2">当前执行状态</p>
-                                    <div className="bg-gray-800 p-3 rounded-md flex items-center justify-between">
-                                        <div className="flex items-center gap-3">
-                                            <span className={`material-icons ${isRetryingFailed ? 'text-red-400 animate-spin' :
-                                                isDataCleaning ? 'text-orange-400 animate-spin' :
-                                                    isProcessing ? 'text-yellow-400 animate-spin' :
-                                                        isLoading ? 'text-blue-400 animate-spin' :
-                                                            'text-green-400'
-                                                }`}>
-                                                {isRetryingFailed ? 'refresh' :
-                                                    isDataCleaning ? 'cleaning_services' : 'autorenew'}
-                                            </span>
-                                            <span className="font-mono text-sm">
-                                                {isRetryingFailed ? '重新验证失败数据中...' :
-                                                    isDataCleaning ? '数据清洗中...' :
-                                                        isLoading ? '加载中...' :
-                                                            currentProperty || '待命中'}
+                                                                            <div className="bg-gray-800 p-3 rounded-md flex items-center justify-between">
+                                            <div className="flex items-center gap-3">
+                                                <span className={`material-icons ${isManualVerifying ? 'text-purple-400 animate-spin' :
+                                                    isRetryingFailed ? 'text-red-400 animate-spin' :
+                                                        isDataCleaning ? 'text-orange-400 animate-spin' :
+                                                            isProcessing ? 'text-yellow-400 animate-spin' :
+                                                                isLoading ? 'text-blue-400 animate-spin' :
+                                                                    'text-green-400'
+                                                    }`}>
+                                                    {isManualVerifying ? 'edit' :
+                                                        isRetryingFailed ? 'refresh' :
+                                                            isDataCleaning ? 'cleaning_services' : 'autorenew'}
+                                                </span>
+                                                <span className="font-mono text-sm">
+                                                    {isManualVerifying ? `手动验证: ${manualProperty}` :
+                                                        isRetryingFailed ? '重新验证失败数据中...' :
+                                                            isDataCleaning ? '数据清洗中...' :
+                                                                isLoading ? '加载中...' :
+                                                                    currentProperty || '待命中'}
+                                                </span>
+                                            </div>
+                                            <span className="text-xs text-gray-500">
+                                                {isManualVerifying ? '手动验证指定属性' :
+                                                    isRetryingFailed ? '重新处理失败的验证结果' :
+                                                        isDataCleaning ? '清洗JSON数据' :
+                                                            isLoading ? '正在加载属性' :
+                                                                'AI分析推荐属性'}
                                             </span>
                                         </div>
-                                        <span className="text-xs text-gray-500">
-                                            {isRetryingFailed ? '重新处理失败的验证结果' :
-                                                isDataCleaning ? '清洗JSON数据' :
-                                                    isLoading ? '正在加载属性' :
-                                                        'AI分析推荐属性'}
-                                        </span>
+                                </div>
+
+                                {/* Manual Property Verification Input */}
+                                <div className="mb-4 p-3 bg-gray-800/50 rounded-lg">
+                                    <h3 className="text-sm font-medium text-gray-300 mb-2 flex items-center">
+                                        <span className="material-icons mr-1 text-purple-400 text-sm">edit</span>手动验证属性
+                                    </h3>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            value={manualProperty}
+                                            onChange={(e) => setManualProperty(e.target.value)}
+                                            placeholder="输入属性名，例如: item_name"
+                                            className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                                            disabled={isManualVerifying || isProcessing || isDataCleaning || isRetryingFailed}
+                                            onKeyPress={(e) => {
+                                                if (e.key === 'Enter' && manualProperty.trim() && !isManualVerifying && !isProcessing && !isDataCleaning && !isRetryingFailed) {
+                                                    handleManualPropertyVerification();
+                                                }
+                                            }}
+                                        />
+                                        <button
+                                            className={`${isManualVerifying
+                                                ? 'bg-purple-600 hover:bg-purple-700'
+                                                : 'bg-purple-500 hover:bg-purple-600'} 
+                                                text-white font-bold py-2 px-4 rounded-md flex items-center gap-1 transition-colors text-sm
+                                                ${(isManualVerifying || isProcessing || isDataCleaning || isRetryingFailed || !manualProperty.trim()) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                            onClick={handleManualPropertyVerification}
+                                            disabled={isManualVerifying || isProcessing || isDataCleaning || isRetryingFailed || !manualProperty.trim()}
+                                            title="手动验证指定属性，会覆盖已有的验证结果"
+                                        >
+                                            <span className={`material-icons text-sm ${isManualVerifying ? 'animate-spin' : ''}`}>
+                                                {isManualVerifying ? 'refresh' : 'play_arrow'}
+                                            </span>
+                                            <span>{isManualVerifying ? '验证中' : '开始验证'}</span>
+                                        </button>
                                     </div>
+                                    <p className="text-xs text-gray-500 mt-1">
+                                        手动验证单个属性，支持覆盖已有数据。输入属性名后点击验证或按回车键开始。
+                                    </p>
                                 </div>
 
                                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
