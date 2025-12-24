@@ -225,7 +225,7 @@ export const aiService = {
                         const response = await axios.post(
                             `${config.OPENAI_API_URL}/chat/completions`,
                             {
-                                model: "gemini-2.5-flash-preview-05-20",
+                                model: "gemini-3-flash-preview",
                                 messages: [
                                     {
                                         role: "system",
@@ -348,7 +348,7 @@ export const aiService = {
                     // Use rate limiter to limit concurrent API calls
                     return await rateLimiter.execute(async () => {
                         return await ai.models.generateContent({
-                            model: "gemini-2.5-pro",
+                            model: "gemini-3-flash-preview",
                             contents: userPrompt,
                             config: {
                                 responseMimeType: "application/json",
@@ -464,7 +464,7 @@ export const aiService = {
                     // Use rate limiter to limit concurrent API calls
                     return await rateLimiter.execute(async () => {
                         const response = await axios.post(
-                            `https://tubiemesazjz.ap-southeast-1.clawcloudrun.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent`,
+                            `https://tubiemesazjz.ap-southeast-1.clawcloudrun.com/v1beta/models/gemini-3-flash-preview:generateContent`,
                             {
                                 contents: [
                                     {
@@ -660,7 +660,7 @@ ${userReference}
                         // Use rate limiter to limit concurrent API calls
                         const response = await rateLimiter.execute(async () => {
                             return await ai.models.generateContent({
-                                model: "gemini-2.5-flash-lite-preview-06-17",
+                                model: "gemini-3-flash-preview",
                                 contents: AMAZON_LISTING_SYSTEM_PROMPT + "\n\n" + sitePrompt,
                                 config: {
                                     responseMimeType: "application/json",

@@ -764,10 +764,10 @@ class VerificationStorageService {
 
 
 
-  // 获取所有唯一的属性名
+  // 获取所有唯一的属性名（只包含状态为completed的记录）
   async getAllPropertyNames(): Promise<string[]> {
     await this.ensureDB();
-    
+
     return new Promise((resolve, reject) => {
       if (!this.db) {
         reject(new Error('Database not initialized'));
@@ -780,7 +780,11 @@ class VerificationStorageService {
 
       request.onsuccess = () => {
         const results = request.result || [];
-        const propertyNames = [...new Set(results.map(result => result.property))];
+        // 只获取状态为completed且有AI生成数据的记录的属性名
+        const completedResults = results.filter(result =>
+          result.status === 'completed' && result.aiGeneratedData
+        );
+        const propertyNames = [...new Set(completedResults.map(result => result.property))];
         propertyNames.sort();
         resolve(propertyNames);
       };

@@ -8,6 +8,7 @@ import { config } from '../config';
 
 // Configure axios default headers
 axios.defaults.headers.common['username'] = '181978';
+axios.defaults.headers.common['authorization'] = 'erp-usermgt-n-token:eyJhbGciOiJIUzUxMiJ9.eyJqdGkiOiIxODE5NzgiLCJzdWIiOiIxODE5NzgiLCJpc3MiOiJaU1RELU5FVyIsImlhdCI6MTc2NjM2ODM1OX0.AHkKFvNluhUFbFw1LAoAgw06BIRjk8aoHfHqbf-vIVk4rqgs4RDtp66Bev1q5cw3CbS44aS4RTqx4tvbXJN0ew';
 
 /**
  * API service for Amazon Listing AI Assistant
